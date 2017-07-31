@@ -44,7 +44,6 @@ class App extends React.Component {
                 
                 <InfotonsList
                     location={this.props.location}
-                    isRoot={true}
                     hasChildrenCb={hasChildren => this.setState({ currentHasChildren: hasChildren })}
                     displayNames={this.state.displayNames}
                     infotonIsEmpty={this.state.infotonIsEmpty}
