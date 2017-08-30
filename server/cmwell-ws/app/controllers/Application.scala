@@ -1698,6 +1698,13 @@ callback=< [URL] >
 
         val maskedInfoton = i.masked(fieldsMask)
 
+        def useCachedSpa(isOldUi: Boolean): Future[Result] = cachedSpa.getContent(isOldUi,nbg).flatMap { markup =>
+          if (markup eq null)
+            Future.successful(ServiceUnavailable("System initialization was not yet completed. Please try again soon."))
+          else
+            infotonIslandResult(markup + "<inject>", "</inject>")
+        }
+
         def infotonIslandResult(prefix: String, suffix: String) = {
           val infotonStr = formatterManager.getFormatter(JsonlType,nbg = nbg).render(maskedInfoton)
 
@@ -1710,6 +1717,8 @@ callback=< [URL] >
           //            CONTENT_LENGTH -> String.valueOf(contentBytes.length), overrideMimetype("text/html;charset=UTF-8", request)) ++ getNoCacheHeaders().toMap), body = Enumerator(contentBytes))
           Future.successful(r)
         }
+
+        lazy val requestedWebApp: Option[WebAppPath] = request.getQueryString("webapp").flatMap(WebAppPath.unapply)
 
         //TODO: use formatter manager to get the suitable formatter
         request.getQueryString("format") match {
@@ -1734,6 +1743,16 @@ callback=< [URL] >
               ScalaJsRuntimeCompiler.compile(scalaJsSource).flatMap(c =>
                 treatContentAsAsset(request, c.getBytes("UTF-8"), mime, i.path, i.uuid, i.lastModified)
               )
+            case _: FileInfoton if requestedWebApp.isDefined => requestedWebApp.get match {
+              case DefaultWebAppPath =>
+                useCachedSpa(isOldUi = false)
+              case RelativeWebAppPath(name) if name == "old-ui" =>
+                useCachedSpa(isOldUi = true)
+              case customWebApp =>
+                val entryPointPath = customWebApp.getAbsolutePath
+                val markup = fetchSpa(entryPointPath)(crudServiceFS)
+                infotonIslandResult()
+            }
             case f: FileInfoton => {
               val mt = f.content.get.mimeType
               val (content, mime) = {
@@ -1748,12 +1767,7 @@ callback=< [URL] >
             // ui
             case _ => {
               val isOldUi = request.queryString.keySet("old-ui")
-              cachedSpa.getContent(isOldUi,nbg).flatMap { markup =>
-                if (markup eq null)
-                  Future.successful(ServiceUnavailable("System initialization was not yet completed. Please try again soon."))
-                else
-                  infotonIslandResult(markup + "<inject>", "</inject>")
-              }
+              useCachedSpa(isOldUi)
             }
           }
         }
@@ -2147,8 +2161,20 @@ case class CMWellPostType(xCmWellType: String) {
   def unapply(request: RequestHeader): Boolean = request.headers.get("X-CM-WELL-TYPE").exists(_.equalsIgnoreCase(xCmWellType))
 }
 
+trait SpaFetcher extends LazyLogging {
+  def fetchSpa(indexHtmlPath: String)(crud: CRUDServiceFS): Future[String] = {
+    crud.getInfotonByPathAsync(indexHtmlPath).collect {
+      case FullBox(FileInfoton(_, _, _, _, _, Some(c),_)) => new String(c.data.get, "UTF-8")
+      case somethingElse => {
+        logger.error("got something else: " + somethingElse)
+        ???
+      }
+    }
+  }
+}
+
 @Singleton
-class CachedSpa @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends LazyLogging {
+class CachedSpa @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends LazyLogging with SpaFetcher {
 
 
   val oldNbgCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(true,true))(Combiner.replacer,ec)
@@ -2161,22 +2187,53 @@ class CachedSpa @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionCo
 
   private def doFetchContent(isOldUi: Boolean, nbg: Boolean): Future[String] = {
     val path = if(isOldUi) contentPath else newContentPath
-    crudServiceFS.getInfotonByPathAsync(path).collect {
-      case FullBox(FileInfoton(_, _, _, _, _, Some(c),_)) => new String(c.data.get, "UTF-8")
-      case somethingElse => {
-        logger.error("got something else: " + somethingElse)
-        ???
-      }
-    }
+    fetchSpa(path)(crudServiceFS)
   }
 
-  def getContent(isOldUi: Boolean, nbg: Boolean): Future[String] =
-    if(isOldUi) {
-      if(nbg) oldNbgCache.getAndUpdateIfNeeded
+  def getContent(isOldUi: Boolean, nbg: Boolean): Future[String] = {
+    if (isOldUi) {
+      if (nbg) oldNbgCache.getAndUpdateIfNeeded
       else oldObgCache.getAndUpdateIfNeeded
     }
     else {
-      if(nbg) newNbgCache.getAndUpdateIfNeeded
+      if (nbg) newNbgCache.getAndUpdateIfNeeded
       else newObgCache.getAndUpdateIfNeeded
     }
+  }
+}
+
+sealed trait WebAppPath {
+  def getAbsolutePath: String
+
+  protected def appendFileNameTo(path: String): String =
+    s"$path${if(path.endsWith("/")) "" else "/"}index.html"
+}
+
+case object DefaultWebAppPath extends WebAppPath {
+  override def getAbsolutePath: String = appendFileNameTo("/meta/app/main/")
+}
+
+case class AbsoluteWebAppPath(path: String) extends WebAppPath {
+  override def getAbsolutePath: String = appendFileNameTo(path)
+}
+
+case class RelativeWebAppPath(name: String) extends WebAppPath {
+  override def getAbsolutePath: String = appendFileNameTo(s"/meta/app/$name/")
+}
+
+/**
+  * DocTest for unapplying a string arg to a WebAppPath instance,
+  * and extracting entry-point FileInfoton
+  *
+  * scala> Seq("main", "old-ui", "/example.org/customWebapp1", "/example.org/customWebapp2/").
+  *      | collect { case WebAppPath(w) => w }.map(_.getAbsolutePath)
+  * res0: Seq[String] = List(/meta/app/main/index.html, /meta/app/old-ui/index.html, /example.org/customWebapp1/index.html, /example.org/customWebapp2/index.html)
+  *
+  */
+object WebAppPath {
+  def unapply(webAppPathOrName: String): Option[WebAppPath] = Option(webAppPathOrName match {
+    case "main" => DefaultWebAppPath
+    case path if path.startsWith("/") => AbsoluteWebAppPath(path)
+    case path => RelativeWebAppPath(path)
+  })
 }
