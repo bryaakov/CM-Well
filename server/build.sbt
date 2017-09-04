@@ -51,6 +51,7 @@ dependenciesManager in Global := {
   case ("com.jason-goodwin", "authentikat-jwt")                    => "com.jason-goodwin" %% "authentikat-jwt" % "0.4.1"
   case ("com.lightbend.akka", "akka-stream-alpakka-cassandra")     => "com.lightbend.akka" %% "akka-stream-alpakka-cassandra" % "0.9"
   case ("com.ning","async-http-client")                            => "com.ning" % "async-http-client" % "1.9.39"
+  case ("com.sksamuel.avro4s", "avro4s-core")                      => "com.sksamuel.avro4s" %% "avro4s-core" %"1.6.4"
   case ("com.spatial4j","spatial4j")                               => "com.spatial4j" % "spatial4j" % "0.5"
   case ("com.tinkerpop.blueprints","blueprints-core")              => "com.tinkerpop.blueprints" % "blueprints-core" % "2.6.0"
   case ("com.tinkerpop.gremlin","gremlin-groovy")                  => "com.tinkerpop.gremlin" % "gremlin-groovy" % "2.6.0"

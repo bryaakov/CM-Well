@@ -19,6 +19,7 @@ libraryDependencies ++= {
     dm("com.github.andrewoma.dexx","collection"),
     dm("com.google.guava","guava"),
     dm("com.google.code.findbugs","jsr305"),
+    dm("com.sksamuel.avro4s", "avro4s-core"),
     dm("com.typesafe.play","play")
       .exclude("com.typesafe.akka","akka-slf4j")
       .exclude("org.slf4j","slf4j-api")

@@ -16,6 +16,7 @@
 
 package controllers
 
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
@@ -37,7 +38,7 @@ import cmwell.util.http.SimpleHttpClient
 import cmwell.util.loading.ScalaJsRuntimeCompiler
 import cmwell.util.{Box, BoxedFailure, EmptyBox, FullBox}
 import cmwell.web.ld.exceptions.UnsupportedURIException
-import cmwell.ws.adt.request.{CMWellRequest, CreateConsumer, Search}
+import cmwell.ws.adt.request.{CMWellRequest, CreateConsumer, Search, SearchRequestParams}
 import cmwell.ws.adt.{BulkConsumeState, ConsumeState, SortedConsumeState}
 import cmwell.ws.util.RequestHelpers._
 import cmwell.ws.util.TypeHelpers._
@@ -61,6 +62,8 @@ import wsutil.{asyncErrorHandler, errorHandler, _}
 import cmwell.syntaxutils.!!!
 import cmwell.util.stream.StreamEventInspector
 import cmwell.web.ld.cmw.CMWellRDFHelper
+import cmwell.util.string.Zip._
+import com.sksamuel.avro4s._
 
 import scala.collection.mutable.{HashMap, MultiMap}
 import scala.concurrent._
@@ -1454,6 +1457,47 @@ callback=< [URL] >
   private def handleSearch(r: Request[AnyContent]): Future[Result] =
     handleSearch(normalizePath(r.path),cmWellBase(r),r.host,r.uri)(r.queryString)
 
+  type CachedSearch = (Option[FieldFilter], SearchResults)
+
+  private val searchViaCache = {
+
+
+    //TODO Avro will work easily on SearchThinResults, using implicit val foo = AvroSchema[SearchThinResults]
+    //TODO    - it only have issues with Infoton... Can we refactor CRUD.search to return same type as in CRUD.thinSearch ?????
+
+    val serialize = (cachedSearch: CachedSearch) => { // (cachedSearch: CachedSearch) => compress(Json.toJson(cachedSearch).toString())
+//      val baos = new ByteArrayOutputStream()
+//      val output = AvroOutputStream.binary[CachedSearch](baos)
+//      output.write(cachedSearch)
+//      output.close()
+//      baos.toByteArray
+
+      Array[Byte](1,2,3) // dummy
+    }
+    val deserialize = (payload: Array[Byte]) => { // (payload: Array[Byte]) => Json.parse(decompress(payload)).as[CachedSearch]
+//      val in = new ByteArrayInputStream(payload)
+//      val input = AvroInputStream.binary[CachedSearch](in)
+//      input.iterator.next
+
+      None -> SearchResults(None, None, 613, 0, 10, Seq.empty[Infoton]) // dummy
+    }
+    val keyDigest = (srp: SearchRequestParams) => s"S_${srp.getDigest}"
+    cmwell.zcache.l1l2(evalNsAndSearch)(keyDigest, deserialize, serialize)(ttlSeconds = 300/*TODO use configurable TTL*/)(crudServiceFS.zCache)
+  }
+
+  private def evalNsAndSearch(srp: SearchRequestParams): Future[CachedSearch] = {
+    val fieldSortParamsFut = RawSortParam.eval(srp.rawSortParams, crudServiceFS, typesCache(srp.nbg), cmwellRDFHelper, srp.nbg)
+    val fieldsFiltersFut = srp.qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff, typesCache(srp.nbg), cmwellRDFHelper, srp.nbg).map(Some.apply))
+    fieldsFiltersFut.flatMap { fieldFilters =>
+      fieldSortParamsFut.flatMap { fieldSortParams =>
+        crudServiceFS.search(srp.pathFilter, fieldFilters, Some(DatesFilter(srp.from, srp.to)),
+          PaginationParams(srp.offset, srp.length), srp.withHistory, srp.withData, fieldSortParams, srp.debugInfo, srp.withDeleted).map {
+            searchResults => fieldFilters -> searchResults
+        }
+      }
+    }
+  }
+
   private def handleSearch(normalizedPath: String,
                            cmWellBase: String,
                            requestHost: String,
@@ -1489,99 +1533,92 @@ callback=< [URL] >
         else if (!withData && (xg || (yg && getQueryString("yg").get.split('|').exists(_.trim.startsWith(">")))))
           Future.successful(BadRequest(s"you can't mix `xg` nor '>' prefixed `yg` expressions without also specifying `with-data`: it makes no sense!"))
         else {
-          val fieldSortParamsFut = RawSortParam.eval(rawSortParams,crudServiceFS,typesCache(nbg),cmwellRDFHelper,nbg)
-          val fieldsFiltersFut = qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg),cmwellRDFHelper,nbg).map(Some.apply))
-          fieldsFiltersFut.flatMap { fieldFilters =>
-            fieldSortParamsFut.flatMap { fieldSortParams =>
-              crudServiceFS.search(pathFilter, fieldFilters, Some(DatesFilter(from, to)),
-                PaginationParams(offset, length), withHistory, withData, fieldSortParams, debugInfo, withDeleted).flatMap { unmodifiedSearchResult =>
+          val srp = SearchRequestParams(normalizedPath, qpOpt, from, to, length, offset, rawSortParams, withDescendants, withDeleted, pathFilter, withData, withHistory, debugInfo, nbg, xg, yg)
+          searchViaCache(srp).flatMap { case (fieldFilters, unmodifiedSearchResult) =>
+            val ygModified = getQueryString("yg") match {
+              case Some(ygp) => {
+                pathExpansionParser(ygp, unmodifiedSearchResult.infotons, getQueryString("yg-chunk-size").flatMap(asInt).getOrElse(10), cmwellRDFHelper, typesCache(nbg), nbg).map { case (ok, infotons) =>
+                  ok -> unmodifiedSearchResult.copy(
+                    length = infotons.size,
+                    infotons = infotons
+                  )
+                }
+              }
+              case None => Future.successful(true -> unmodifiedSearchResult)
+            }
 
-                val ygModified = getQueryString("yg") match {
-                  case Some(ygp) => {
-                    pathExpansionParser(ygp, unmodifiedSearchResult.infotons, getQueryString("yg-chunk-size").flatMap(asInt).getOrElse(10),cmwellRDFHelper,typesCache(nbg),nbg).map { case (ok, infotons) =>
-                      ok -> unmodifiedSearchResult.copy(
-                        length = infotons.size,
-                        infotons = infotons
-                      )
-                    }
+            val fSearchResult = ygModified.flatMap {
+              case (true, sr) => getQueryString("xg") match {
+                case None => Future.successful(true -> sr)
+                case Some(xgp) => {
+                  deepExpandGraph(xgp, sr.infotons, cmwellRDFHelper, typesCache(nbg), nbg).map { case (ok, infotons) =>
+                    ok -> unmodifiedSearchResult.copy(
+                      length = infotons.size,
+                      infotons = infotons
+                    )
                   }
-                  case None => Future.successful(true -> unmodifiedSearchResult)
+                }
+              }
+              case (b, sr) => Future.successful(b -> sr)
+            }
+
+            fSearchResult.flatMap { case (ok, searchResult) =>
+              extractFieldsMask(getQueryString("fields"), typesCache(nbg), cmwellRDFHelper, nbg).map { fieldsMask =>
+                // Prepare pagination info
+                val linkBase = cmWellBase + normalizedPath + getQueryString("format").map {
+                  "?format=" + _
+                }.getOrElse("?") + getQueryString("with-descendants").map {
+                  "&with-descendants=" + _
+                }.getOrElse("?") + getQueryString("recursive").map {
+                  "&recursive=" + _
+                }.getOrElse("") + "&op=search" + searchResult.fromDate.map {
+                  f => "&from=" + URLEncoder.encode(fullDateFormatter.print(f), "UTF-8")
+                }.getOrElse("") +
+                  searchResult.toDate.map {
+                    t => "&to=" + URLEncoder.encode(fullDateFormatter.print(t), "UTF-8")
+                  }.getOrElse("") + getQueryString("qp").map {
+                  "&qp=" + URLEncoder.encode(_, "UTF-8")
+                }.getOrElse("") + "&length=" + searchResult.length
+
+                val self = linkBase + "&offset=" + searchResult.offset
+                val first = linkBase + "&offset=0"
+                val last = searchResult.length match {
+                  case l if l > 0 => linkBase + "&offset=" + ((searchResult.total / searchResult.length) * searchResult.length)
+                  case _ => linkBase + "&offset=0"
                 }
 
-                val fSearchResult = ygModified.flatMap {
-                  case (true, sr) => getQueryString("xg") match {
-                    case None => Future.successful(true -> sr)
-                    case Some(xgp) => {
-                      deepExpandGraph(xgp, sr.infotons,cmwellRDFHelper,typesCache(nbg),nbg).map { case (ok, infotons) =>
-                        ok -> unmodifiedSearchResult.copy(
-                          length = infotons.size,
-                          infotons = infotons
-                        )
-                      }
-                    }
-                  }
-                  case (b, sr) => Future.successful(b -> sr)
+                val next = searchResult.offset + searchResult.length - searchResult.total match {
+                  case x if x < 0 => Some(linkBase + "&offset=" + (searchResult.offset + searchResult.length))
+                  case _ => None
                 }
 
-                fSearchResult.flatMap { case (ok, searchResult) =>
-                  extractFieldsMask(getQueryString("fields"),typesCache(nbg),cmwellRDFHelper, nbg).map { fieldsMask =>
-                    // Prepare pagination info
-                    val linkBase = cmWellBase + normalizedPath + getQueryString("format").map {
-                      "?format=" + _
-                    }.getOrElse("?") + getQueryString("with-descendants").map {
-                      "&with-descendants=" + _
-                    }.getOrElse("?") + getQueryString("recursive").map {
-                      "&recursive=" + _
-                    }.getOrElse("") + "&op=search" + searchResult.fromDate.map {
-                      f => "&from=" + URLEncoder.encode(fullDateFormatter.print(f), "UTF-8")
-                    }.getOrElse("") +
-                      searchResult.toDate.map {
-                        t => "&to=" + URLEncoder.encode(fullDateFormatter.print(t), "UTF-8")
-                      }.getOrElse("") + getQueryString("qp").map {
-                      "&qp=" + URLEncoder.encode(_, "UTF-8")
-                    }.getOrElse("") + "&length=" + searchResult.length
+                val previous = (searchResult.offset - searchResult.length) match {
+                  case dif if dif >= 0 => Some(linkBase + "&offset=" + dif)
+                  case dif if dif < 0 && -dif < searchResult.length => Some(linkBase + "&offset=0")
+                  case _ => None
+                }
 
-                    val self = linkBase + "&offset=" + searchResult.offset
-                    val first = linkBase + "&offset=0"
-                    val last = searchResult.length match {
-                      case l if l > 0 => linkBase + "&offset=" + ((searchResult.total / searchResult.length) * searchResult.length)
-                      case _ => linkBase + "&offset=0"
-                    }
+                val paginationInfo = PaginationInfo(first, previous, self, next, last)
 
-                    val next = searchResult.offset + searchResult.length - searchResult.total match {
-                      case x if x < 0 => Some(linkBase + "&offset=" + (searchResult.offset + searchResult.length))
-                      case _ => None
-                    }
-
-                    val previous = (searchResult.offset - searchResult.length) match {
-                      case dif if dif >= 0 => Some(linkBase + "&offset=" + dif)
-                      case dif if dif < 0 && -dif < searchResult.length => Some(linkBase + "&offset=0")
-                      case _ => None
-                    }
-
-                    val paginationInfo = PaginationInfo(first, previous, self, next, last)
-
-                    //TODO: why not check for valid format before doing all the hard work for search?
-                    getQueryString("format").getOrElse("atom") match {
-                      case FormatExtractor(formatType) => {
-                        val formatter = formatterManager.getFormatter(
-                          format = formatType,
-                          host = requestHost,
-                          uri = requestUri,
-                          pretty = queryString.keySet("pretty"),
-                          callback = queryString.get("callback").flatMap(_.headOption),
-                          fieldFilters = fieldFilters,
-                          offset = Some(offset.toLong),
-                          length = Some(length.toLong),
-                          withData = withDataFormat,
-                          forceUniqueness = withHistory,
-                          nbg = nbg)
-                        if (ok) Ok(formatter.render(SearchResponse(paginationInfo, searchResult.masked(fieldsMask)))).as(overrideMimetype(formatter.mimetype, getQueryString("override-mimetype"))._2)
-                        else InsufficientStorage(formatter.render(SearchResponse(paginationInfo, searchResult))).as(overrideMimetype(formatter.mimetype, getQueryString("override-mimetype"))._2)
-                      }
-                      case unrecognized: String => BadRequest(s"unrecognized format requested: $unrecognized")
-                    }
+                //TODO: why not check for valid format before doing all the hard work for search?
+                getQueryString("format").getOrElse("atom") match {
+                  case FormatExtractor(formatType) => {
+                    val formatter = formatterManager.getFormatter(
+                      format = formatType,
+                      host = requestHost,
+                      uri = requestUri,
+                      pretty = queryString.keySet("pretty"),
+                      callback = queryString.get("callback").flatMap(_.headOption),
+                      fieldFilters = fieldFilters,
+                      offset = Some(offset.toLong),
+                      length = Some(length.toLong),
+                      withData = withDataFormat,
+                      forceUniqueness = withHistory,
+                      nbg = nbg)
+                    if (ok) Ok(formatter.render(SearchResponse(paginationInfo, searchResult.masked(fieldsMask)))).as(overrideMimetype(formatter.mimetype, getQueryString("override-mimetype"))._2)
+                    else InsufficientStorage(formatter.render(SearchResponse(paginationInfo, searchResult))).as(overrideMimetype(formatter.mimetype, getQueryString("override-mimetype"))._2)
                   }
+                  case unrecognized: String => BadRequest(s"unrecognized format requested: $unrecognized")
                 }
               }
             }
