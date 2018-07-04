@@ -27,7 +27,7 @@ import cmwell.common.formats.JsonSerializerForES
 import cmwell.common.formats.{BGMessage, CompleteOffset, Offset}
 import cmwell.fts._
 import cmwell.irw.{IRWService, QUORUM}
-import cmwell.util.{BoxedFailure, EmptyBox, FullBox}
+import cmwell.util.{Box, BoxedFailure, EmptyBox, FullBox}
 import cmwell.common._
 import cmwell.common.exception.getStackTrace
 import cmwell.domain.Infoton
@@ -286,6 +286,8 @@ class IndexerStream(partition: Int,
                   _,
                   inic@IndexNewInfotonCommandForIndexer(uuid, _, _, None, _, _, _)
                   ) =>
+
+                    cmwell.util.concurrent.unsafeRetryUntil[Try[BGMessage[IndexCommand]]](_.isSuccess, 10, 500.millis)(
                     irwService.readUUIDAsync(uuid, QUORUM).map {
                       case FullBox(infoton) =>
                         Success(
@@ -308,7 +310,7 @@ class IndexerStream(partition: Int,
                         )
                         redlog.info("", e)
                         Failure(e)
-                    }
+                    })
                   case bgMessage => Future.successful(Success(bgMessage))
                 }
                 .collect {

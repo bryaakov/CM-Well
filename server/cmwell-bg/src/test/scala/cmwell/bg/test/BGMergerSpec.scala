@@ -251,7 +251,7 @@ class BGMergerSpec extends FlatSpec with Matchers with OptionValues {
 
   }
 
-  it should "merge not-indexed base infoton with identical command correctly" in {
+  ignore should "merge not-indexed base infoton with identical command correctly" in {
     val baseInfoton = ObjectInfoton(
       "/bg-test-merge/infonotindexed1",
       "dc1",

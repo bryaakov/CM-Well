@@ -389,6 +389,9 @@ class ImpStream(partition: Int,
   val breakout =
     breakOut[Iterable[IndexCommand], (Message[Array[Byte], Array[Byte], Seq[Offset]], Option[Infoton]),
       ISeq[(Message[Array[Byte], Array[Byte], Seq[Offset]], Option[Infoton])]]
+  val breakoutTuple =
+    breakOut[Iterable[IndexCommand], (Message[Array[Byte], Array[Byte], (Seq[Offset], Option[Infoton])]),
+      ISeq[(Message[Array[Byte], Array[Byte], (Seq[Offset], Option[Infoton])])]]
   val mergedCommandToKafkaRecord =
     Flow[BGMessage[(BulkIndexResult, Seq[IndexCommand])]].mapConcat {
       case BGMessage(offsets, (bulkIndexResults, commands)) =>
@@ -440,25 +443,23 @@ class ImpStream(partition: Int,
               commandToSerialize.path.getBytes,
               CommandSerializer.encode(commandToSerialize)
             ),
-            offsets
+            offsets -> None
           )
-        }(breakout)
+        }(breakoutTuple)
     }
   val indexCommandsToKafkaRecords =
     Flow[BGMessage[Seq[IndexCommand]]].mapConcat {
       case BGMessage(offsets, commands) =>
         logger.debug(s"converting index commands to kafka records:\n$commands")
         commands.map { command =>
-          val (commandToSerialize, infotonOpt)  =
+          val (commandToSerialize: IndexCommand, infopt)  =
             (if (command.isInstanceOf[IndexNewInfotonCommand] &&
               command
                 .asInstanceOf[IndexNewInfotonCommand]
                 .infotonOpt
                 .get
                 .weight > maxInfotonWeightToIncludeInCommand) {
-              command
-                .asInstanceOf[IndexNewInfotonCommand]
-                .copy(infotonOpt = None)
+              command.asInstanceOf[IndexNewInfotonCommand].copy(infotonOpt = None)
             } else
               command) match {
               case cmd: IndexNewInfotonCommand =>
@@ -477,11 +478,11 @@ class ImpStream(partition: Int,
               commandToSerialize.path.getBytes,
               CommandSerializer.encode(commandToSerialize)
             ),
-            offsets
-          ) -> infotonOpt
-        }(breakout)
+            offsets -> infopt
+          )
+        }(breakoutTuple)
     }
-  val nullCommandsToKafkaRecords: Flow[BGMessage[(Option[Infoton], MergeResponse)], Message[Array[Byte], Array[Byte], Seq[Offset]], NotUsed] =
+  val nullCommandsToKafkaRecords: Flow[BGMessage[(Option[Infoton], MergeResponse)], Message[Array[Byte], Array[Byte], (Seq[Offset],Option[Infoton])], NotUsed] =
     Flow.fromFunction {
       case msg@BGMessage(offsets, (_, NullUpdate(path, tids, evictions))) =>
         logger.debug(s"converting null command to kafka records:\n path: $path, offsets: [$offsets]")
@@ -497,14 +498,21 @@ class ImpStream(partition: Int,
             nullCmd.path.getBytes,
             CommandSerializer.encode(nullCmd)
           ),
-          offsets
+          offsets -> None
         )
     }
   val publishIndexCommandsFlow = Producer
-    .flow[Array[Byte], Array[Byte], Seq[Offset]](kafkaProducerSettings)
+    .flow[Array[Byte], Array[Byte], (Seq[Offset],Option[Infoton])](kafkaProducerSettings)
     .map {
       _.message.passThrough
     }
+
+
+  val actuallyPersistInCas = Flow[(Seq[Offset],Option[Infoton])].mapAsync(irwWriteConcurrency) { case (offset, infotonOpt) =>
+    infotonOpt.fold(Future.successful(offset)){ infoton =>
+      irwService.writeAsync(infoton, ConsistencyLevel.QUORUM).map(_ => offset)
+    }
+  }
 
   // @formatter:off
   val impGraph = RunnableGraph.fromGraph(
@@ -882,7 +890,7 @@ class ImpStream(partition: Int,
 
         val indexCommandsMerge = builder.add(Merge[BGMessage[Seq[IndexCommand]]](2))
 
-        val mergeKafkaRecords = builder.add(Merge[(Message[Array[Byte], Array[Byte], Seq[Offset]], Option[Infoton])](2))
+        val mergeKafkaRecords = builder.add(Merge[(Message[Array[Byte], Array[Byte], (Seq[Offset], Option[Infoton])])](2))
 
         val nonOverrideIndexCommandsBroadcast = builder.add(Broadcast[BGMessage[Seq[(IndexCommand, Option[DateTime])]]](2))
 
@@ -909,7 +917,7 @@ class ImpStream(partition: Int,
 
         partitionNonNullMerged.out1 ~> logOrReportEvicted ~> Sink.ignore
 
-        partitionMerged.out(1) ~> reportNullUpdates ~> nullCommandsToKafkaRecords ~> publishIndexCommandsFlow ~> mergeCompletedOffsets.in(1)
+        partitionMerged.out(1) ~> reportNullUpdates ~> nullCommandsToKafkaRecords ~> publishIndexCommandsFlow.map(_._1) ~> mergeCompletedOffsets.in(1)
 
         nonOverrideIndexCommandsBroadcast.out(0) ~> createVirtualParents ~> publishVirtualParents
 
@@ -929,7 +937,7 @@ class ImpStream(partition: Int,
 
         partitionIndexResult.out(1) ~> mergedCommandToKafkaRecord ~> mergeKafkaRecords.in(1)
 
-        mergeKafkaRecords.out ~> publishIndexCommandsFlow ~> add persist to cas here  ~> mergeCompletedOffsets.in(3)
+        mergeKafkaRecords.out ~> publishIndexCommandsFlow ~> actuallyPersistInCas ~> mergeCompletedOffsets.in(3)
 
         mergeCompletedOffsets.out ~> commitOffsets
 
