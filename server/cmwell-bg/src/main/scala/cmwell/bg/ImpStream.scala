@@ -256,6 +256,7 @@ class ImpStream(partition: Int,
           s"merging existing infoton: $baseInfoton with commands: $commands"
         )
 
+        logger.info(s"Eli merge: merging existing infoton: $baseInfoton with commands: $commands")
         val mergedInfoton =
           if (baseInfoton.isDefined || commands.size > 1)
             bGMetrics.mergeTimer.time(merger.merge(baseInfoton, commands))
@@ -538,8 +539,14 @@ class ImpStream(partition: Int,
 
         val partitionMerged = builder.add(
           Partition[BGMessage[(Option[Infoton], MergeResponse)]](2, {
-            case BGMessage(_, (_, mergeResponse)) if mergeResponse.isInstanceOf[RealUpdate] => 0
-            case _ => 1
+            case BGMessage(offsets, (infoton, mergeResponse)) if mergeResponse.isInstanceOf[RealUpdate] => {
+              logger.info(s"Eli: offsets: $offsets infoton $infoton merge response is $mergeResponse")
+              0
+            }
+            case BGMessage(offsets, (infoton, mergeResponse)) => {
+              logger.info(s"Eli: offsets: $offsets infoton $infoton merge response is $mergeResponse")
+              1
+            }
           })
         )
 
