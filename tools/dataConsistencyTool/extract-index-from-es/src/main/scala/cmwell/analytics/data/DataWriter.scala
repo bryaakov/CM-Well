@@ -93,6 +93,9 @@ class CsvDataWriter[T <: GenericRecord with CsvGenerator](schema: Schema, path: 
 
   private def flush(): Unit = {
     if (buffer.size > 0) {
+      val p = Paths.get(path)
+
+
       Files.write(Paths.get(path), buffer.toByteArray, StandardOpenOption.APPEND)
       buffer.reset()
     }

@@ -33,6 +33,8 @@ object DataWriterFactory {
 
       if (outFile.exists)
         FileUtils.forceDelete(outFile)
+      else
+        FileUtils.touch(outFile)
 
       new File(outFile.getParent).mkdirs()
 

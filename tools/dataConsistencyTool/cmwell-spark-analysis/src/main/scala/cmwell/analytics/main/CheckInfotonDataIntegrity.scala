@@ -40,11 +40,12 @@ object CheckInfotonDataIntegrity {
           infoton.hasIncorrectUuid ||
             infoton.hasDuplicatedSystemFields ||
             infoton.hasInvalidContent ||
-            infoton.hasMissingOrIllFormedSystemFields
+            infoton.hasMissingOrIllFormedSystemFields ||
+            !infoton.hasHttpsProtocol
         )
 
         damagedInfotons.select("uuid", "lastModified", "path",
-          "hasIncorrectUuid", "hasMissingOrIllFormedSystemFields", "hasDuplicatedSystemFields", "hasInvalidContent", "hasUnknownSystemField")
+          "hasIncorrectUuid", "hasMissingOrIllFormedSystemFields", "hasDuplicatedSystemFields", "hasInvalidContent", "hasUnknownSystemField", "hasHttpsProtocol")
           .write.csv(Opts.out())
       }
     }

@@ -42,7 +42,8 @@ case class InfotonDataIntegrity(uuid: String,
                                 hasMissingOrIllFormedSystemFields: Boolean,
                                 hasDuplicatedSystemFields: Boolean,
                                 hasInvalidContent: Boolean,
-                                hasUnknownSystemField: Boolean)
+                                hasUnknownSystemField: Boolean,
+                                hasHttpsProtocol: Boolean)
 
 object InfotonDataIntegrity extends EstimateDatasetSize {
 
@@ -92,11 +93,14 @@ object InfotonDataIntegrity extends EstimateDatasetSize {
       var dc: String = null
       var indexName: String = null
       var indexTime: String = null
+      var protocol: String = null
 
       var linkTo: String = null
       var linkType: String = null
 
       var unknownSystemField = false
+
+      var httpsProtocol = false
 
       rows.foreach { infotonRow =>
 
@@ -121,6 +125,9 @@ object InfotonDataIntegrity extends EstimateDatasetSize {
             case "dc" => dc = infotonRow.getString("value")
             case "indexName" => indexName = infotonRow.getString("value")
             case "indexTime" => indexTime = infotonRow.getString("value")
+            case "protocol" =>
+              protocol = infotonRow.getString("value")
+              httpsProtocol = protocol == "https"
 
             case _ => unknownSystemField = true
           }
@@ -213,7 +220,8 @@ object InfotonDataIntegrity extends EstimateDatasetSize {
           hasMissingOrIllFormedSystemFields = hasMissingOrIllFormedSystemFields,
           hasDuplicatedSystemFields = hasDuplicatedSystemFields,
           hasInvalidContent = !isContentValid,
-          hasUnknownSystemField = unknownSystemField))
+          hasUnknownSystemField = unknownSystemField,
+          hasHttpsProtocol = httpsProtocol))
       }
     }
 

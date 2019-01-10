@@ -18,7 +18,8 @@ case class IndexWithSystemFields(kind: String,
                                  indexName: String,
                                  indexTime: java.lang.Long,
                                  parent: String,
-                                 current: java.lang.Boolean) extends GenericRecord with CsvGenerator {
+                                 current: java.lang.Boolean,
+                                 protocol: String) extends GenericRecord with CsvGenerator {
 
   override def put(key: String, v: scala.Any): Unit = ???
 
@@ -32,6 +33,7 @@ case class IndexWithSystemFields(kind: String,
     case "indexTime" => indexTime
     case "parent" => parent
     case "current" => current
+    case "protocol" => protocol
     case _ => throw new IllegalArgumentException
   }
 
@@ -47,6 +49,7 @@ case class IndexWithSystemFields(kind: String,
     case 6 => indexTime
     case 7 => parent
     case 8 => current
+    case 9 => protocol
     case _ => throw new IllegalArgumentException
   }
 
@@ -61,7 +64,8 @@ case class IndexWithSystemFields(kind: String,
       (if (indexName == null) "" else indexName) + "," +
       (if (indexTime == null) "" else indexTime.toString) + "," +
       (if (parent == null) "" else parent) + "," +
-      (if (current == null) "" else current.toString)
+      (if (current == null) "" else current.toString  + "," +
+      (if (protocol == null) "" else protocol))
 }
 
 object IndexWithSystemFields extends ObjectExtractor[IndexWithSystemFields] {
@@ -80,6 +84,7 @@ object IndexWithSystemFields extends ObjectExtractor[IndexWithSystemFields] {
     .name("indexTime").`type`.unionOf.longType.and.nullType.endUnion.noDefault
     .name("parent").`type`.unionOf.stringType.and.nullType.endUnion.noDefault
     .name("current").`type`.unionOf.booleanType.and.nullType.endUnion.noDefault
+    .name("protocol").`type`.unionOf.stringType.and.nullType.endUnion.noDefault
     .endRecord
 
   private val config = ConfigFactory.load
@@ -88,7 +93,7 @@ object IndexWithSystemFields extends ObjectExtractor[IndexWithSystemFields] {
   def includeFields: String = {
     // Note that 'quad' is not included in this list
     // uuid and indexName are extracted from _id and _index
-    val fields = "kind,lastModified,path,dc,indexTime,parent,current"
+    val fields = "kind,lastModified,path,dc,indexTime,parent,current,protocol"
       .split(",")
       .map(name => s""""system.$name"""")
       .mkString(",")
@@ -159,6 +164,7 @@ object IndexWithSystemFields extends ObjectExtractor[IndexWithSystemFields] {
       indexName = extractMetaString("_index"),
       indexTime = extractLong("indexTime"),
       parent = extractString("parent"),
-      current = extractBoolean("current"))
+      current = extractBoolean("current"),
+      protocol = extractString("protocol"))
   }
 }
